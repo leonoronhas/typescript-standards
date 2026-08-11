@@ -32,6 +32,7 @@ This file governs multi-package TypeScript repositories: workspace tooling, lock
 | MONO-012 | SHOULD | Run affected-only CI with remote caching instead of rebuilding the whole repository. |
 | MONO-013 | SHOULD | Typecheck packages against built or referenced types, not source reach-ins (project references or per-package builds). |
 | MONO-014 | MUST | Version and publish packages through changesets, never by hand-editing versions. |
+| MONO-015 | SHOULD | Validate publishable packages with publint and @arethetypeswrong/cli against the packed output in CI before publishing. |
 
 ## Rules
 
@@ -51,7 +52,7 @@ This file governs multi-package TypeScript repositories: workspace tooling, lock
 {
   "name": "org-monorepo",
   "private": true,
-  "packageManager": "pnpm@9.12.0"
+  "packageManager": "pnpm@11.21.0"   // pin a currently supported major (pnpm 11 requires Node 22+)
 }
 ```
 
@@ -175,10 +176,11 @@ import { formatDate } from "../../../packages/utils/src/dates"; // relative reac
 
 **Don't:**
 
-```jsonc
-// .npmrc — reintroduces phantom dependencies by flattening node_modules
-// shamefully-hoist=true
-// node-linker=hoisted
+```yaml
+# pnpm-workspace.yaml — reintroduces phantom dependencies by flattening node_modules
+# (pnpm 11+ reads these settings only here; .npmrc carries auth/registry settings only)
+shamefullyHoist: true
+nodeLinker: hoisted
 ```
 
 **Exception:** Genuinely shared singletons that must not be duplicated (e.g., `react`) belong in `peerDependencies` of library packages — still declared, just in the correct field.
@@ -233,9 +235,10 @@ export default [...org];
 
 **Don't:**
 
-```jsonc
-// apps/web/.eslintrc.json — hand-rolled local ruleset diverging from the org standard
-{ "rules": { "no-unused-vars": "off" } }
+```js
+// apps/web/eslint.config.js — redefines rules locally instead of extending @org/eslint-config
+// (legacy .eslintrc.* forks are worse still: ESLint 10 ignores eslintrc files entirely)
+export default [{ rules: { "no-unused-vars": "off" } }];
 ```
 
 **Exception:** A package may append rules that only make sense for its runtime (e.g., React hooks rules in UI packages) on top of the shared base — appending, never overriding the base to be weaker.
@@ -316,7 +319,7 @@ Enforce mechanically, not by review memory — e.g., dependency-cruiser or Nx `e
 
 ```bash
 # CI: run build + test only for packages affected since the merge base, with remote cache
-turbo run build test --filter="...[origin/main]"
+turbo run build test --affected   # TURBO_SCM_BASE overrides the default comparison base
 # Nx equivalent: nx affected -t build test --base=origin/main
 ```
 
@@ -359,7 +362,7 @@ pnpm -r run build && pnpm -r run test
 
 ### MONO-014 MUST: Version and publish through changesets
 
-**Why:** Hand-edited versions skip semver review, changelogs, and dependent-package bumps; changesets records intent (patch/minor/major plus a summary) alongside the code change and mechanically propagates version bumps through internal dependents at release time. The changeset file authored in the change PR is the changelog entry required by DOC-010 in `documentation.md` — it satisfies the written-in-the-PR requirement — and the changesets-generated CHANGELOG format is the accepted format for published monorepo packages.
+**Why:** Hand-edited versions skip semver review, changelogs, and dependent-package bumps; changesets records intent (patch/minor/major plus a summary) alongside the code change and mechanically propagates version bumps through internal dependents at release time. The changeset file authored in the change PR is the changelog entry required by DOC-010 in `documentation.md` — it satisfies the written-in-the-PR requirement — and the changesets-generated CHANGELOG format is the accepted format for published monorepo packages. pnpm 11.11+ ships native release management (`pnpm change` / `pnpm lane`); this guide standardizes on changesets until that tooling matures, and a repository must never mix the two mechanisms.
 
 **Do:**
 
@@ -377,3 +380,24 @@ sed -i '' 's/"1.2.0"/"1.3.0"/' packages/ui/package.json && npm publish
 ```
 
 **Exception:** Packages that are never published (`"private": true` apps and internal-only tools) do not need changesets entries; the moment a package is published anywhere (npm, a private registry), this rule applies.
+
+### MONO-015 SHOULD: Validate publishable packages with publint and @arethetypeswrong/cli against the packed output
+
+**Why:** An `exports` map (MONO-003) that typechecks in the workspace can still ship broken: files missing from the tarball, `types` conditions no module resolution mode actually resolves, ESM/CJS mismatches only a consumer sees. publint validates the manifest against the actual packed contents, and @arethetypeswrong/cli resolves the package the way TypeScript consumers do under each resolution mode — mechanically closing the hides-until-publish gap MONO-013 warns about, before `changeset publish` runs.
+
+**Do:**
+
+```bash
+# CI, in each publishable package, before changeset publish
+pnpm publint            # manifest vs. packed files: exports, main, types
+pnpm attw --pack .      # packs the tarball itself, then checks consumer-side type resolution
+```
+
+**Don't:**
+
+```bash
+# Publish on green typecheck alone — workspace resolution hides tarball breakage
+pnpm changeset publish   # the first consumer install becomes the first real exports test
+```
+
+**Exception:** Private (`"private": true`) apps and internal-only tools are never packed for consumers and are exempt.

@@ -48,7 +48,7 @@ Core language and compiler rules for every TypeScript file, in any framework: co
 
 ### TS-001 MUST: Compile every project against the strict baseline tsconfig
 
-**Why:** Every flag below removes a class of silent runtime bug; `strict` alone leaves unchecked index access, optional-property confusion, accidental overrides, and switch fallthrough uncovered. A project that compiles under this baseline gets the rest of this guide's guarantees for free.
+**Why:** Every flag below removes a class of silent runtime bug; `strict` alone — the compiler default since TypeScript 6.0 — leaves unchecked index access, optional-property confusion, accidental overrides, and switch fallthrough uncovered. Keep `strict` explicit anyway: it covers older compilers and turns any downgrade into a visible diff. A project that compiles under this baseline gets the rest of this guide's guarantees for free.
 
 **Do:**
 
@@ -61,7 +61,9 @@ Core language and compiler rules for every TypeScript file, in any framework: co
     "exactOptionalPropertyTypes": true,  // `prop?: T` no longer accepts an explicit undefined
     "noImplicitOverride": true,          // subclass methods must say `override`
     "noFallthroughCasesInSwitch": true,  // non-empty cases must break/return
-    "verbatimModuleSyntax": true         // type imports must be marked `import type`
+    "verbatimModuleSyntax": true,        // type imports must be marked `import type`
+    "erasableSyntaxOnly": true,          // no enums, runtime namespaces, or parameter properties — enforces TS-006/TS-016; required for Node.js type stripping
+    "skipLibCheck": true                 // skip type-checking of dependency .d.ts files (performance) — never as a fix for your own type errors
   }
 }
 ```
@@ -71,13 +73,12 @@ Core language and compiler rules for every TypeScript file, in any framework: co
 ```jsonc
 {
   "compilerOptions": {
-    "strict": false,          // opts out of null checks, implicit any, and more
-    "skipLibCheck": true      // acceptable, but never as a fix for your own type errors
+    "strict": false // never disable the TS 6.0+ default: drops null checks, implicit-any errors, and more
   }
 }
 ```
 
-**Exception:** A legacy codebase may adopt the non-`strict` flags one at a time, ratcheting forward only — never disable a flag that is already on. `strict: true` itself is non-negotiable for new projects.
+**Exception:** A legacy codebase may adopt the non-`strict` flags one at a time, ratcheting forward only — never disable a flag that is already on. `strict: true` itself is non-negotiable for new projects. A codebase exercising the TS-016 string-enum exception must leave `erasableSyntaxOnly` off — the flag errors on every enum declaration.
 
 ### TS-002 MUST NOT: Type values as `any`
 
@@ -638,3 +639,5 @@ export function createClient(options: ClientOptions): Client {
 ```bash
 npm run lint && npm run format:check   # both wired into CI, not optional local habits
 ```
+
+**Exception:** Type-aware linting requires the JS-based compiler line: projects type-checking with TypeScript 7.x must pin TypeScript 6.x for typescript-eslint (Microsoft's `@typescript/typescript6` npm alias lets the two coexist) until TypeScript 7.1 ships its stable programmatic API. Configuration mechanics live in `security-and-linting.md`.

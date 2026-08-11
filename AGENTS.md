@@ -24,21 +24,21 @@ This folder is a TypeScript standards guide engineered for selective loading: ma
 | File | Prefix | Rules | Governs | Load when |
 | --- | --- | --- | --- | --- |
 | [standards/code-organization.md](standards/code-organization.md) | ORG | 16 | Large-scale structure, module boundaries, dependency direction | Designing folder structure; deciding where code and its test/type/style files live (colocation); imports crossing feature/layer boundaries; path aliases, barrels, splitting modules |
-| [standards/reusable-patterns.md](standards/reusable-patterns.md) | PAT | 15 | Typed design patterns and when *not* to abstract | Extracting shared abstractions; choosing factory/builder/strategy/repository; error-handling design; wiring dependencies; modeling domain state |
+| [standards/reusable-patterns.md](standards/reusable-patterns.md) | PAT | 16 | Typed design patterns and when *not* to abstract | Extracting shared abstractions; choosing factory/builder/strategy/repository; error-handling design; wiring dependencies; modeling domain state |
 | [standards/typescript-language.md](standards/typescript-language.md) | TS | 25 | Language + compiler rules: strict tsconfig, type modeling, narrowing, assertions, naming | Writing any TS source; editing tsconfig; designing types/unions/enums; typing trust-boundary data; reviewing for type safety |
 | [standards/security-and-linting.md](standards/security-and-linting.md) | SEC | 22 | Vulnerability scanning, supply chain, input validation, injection defense, lint/format/CI gates | Adding or auditing dependencies; handling external input; shell/SQL/regex/filesystem code; ESLint/formatter/pre-commit/CI setup; secrets and .env |
 | [standards/documentation.md](standards/documentation.md) | DOC | 14 | TSDoc, comments, READMEs, ADRs, changelogs, examples, LLM-retrievable docs | Writing doc comments; creating/restructuring READMEs, ADRs, changelogs; publishing packages; adding examples or diagrams; organizing docs for retrieval |
 | [standards/testing-tdd.md](standards/testing-tdd.md) | TDD | 17 | Test-driven development loop, test pyramid, test quality | Implementing new behavior; fixing bugs; writing or reviewing tests; choosing unit vs integration vs e2e; CI test runs, flakes, coverage |
-| [standards/live-verification.md](standards/live-verification.md) | VER | 12 | Evidence-based verification: prove it live before claiming done | About to claim done/fixed/working; reporting implementation status; confirming a bug fix; deploying; writing smoke checklists |
+| [standards/live-verification.md](standards/live-verification.md) | VER | 13 | Evidence-based verification: prove it live before claiming done | About to claim done/fixed/working; reporting implementation status; confirming a bug fix; deploying; writing smoke checklists |
 
 ### Stack addenda (load *in addition to* the core when the stack matches)
 
 | File | Prefix | Rules | Governs | Load when |
 | --- | --- | --- | --- | --- |
-| [standards/nodejs.md](standards/nodejs.md) | NODE | 16 | Node runtime: process lifecycle, config, logging, async discipline, inbound/outbound I/O | Writing Node backend code; service setup; env/config/logging; promises and shutdown; HTTP calls, child processes, large payloads |
+| [standards/nodejs.md](standards/nodejs.md) | NODE | 18 | Node runtime: process lifecycle, config, logging, async discipline, inbound/outbound I/O | Writing Node backend code; service setup; env/config/logging; promises and shutdown; HTTP calls, child processes, large payloads |
 | [standards/react.md](standards/react.md) | REACT | 18 | Components, hooks, state, context, forms, accessibility, component testing | Writing/reviewing React components or hooks; props/state design; server data fetching; re-render/effect debugging; forms, context, a11y |
 | [standards/nextjs.md](standards/nextjs.md) | NEXT | 14 | App Router: server/client boundaries, secrets, server actions, caching, routing | Any work in a Next.js project: `use client` placement, server actions, route handlers, caching/revalidation, env handling, app/ conventions |
-| [standards/monorepo.md](standards/monorepo.md) | MONO | 14 | Workspaces, shared config packages, package boundaries, orchestration, publishing | Multi-package repos: adding packages, cross-package imports, shared tsconfig/lint config, CI/task caching, versioning and publishing |
+| [standards/monorepo.md](standards/monorepo.md) | MONO | 15 | Workspaces, shared config packages, package boundaries, orchestration, publishing | Multi-package repos: adding packages, cross-package imports, shared tsconfig/lint config, CI/task caching, versioning and publishing |
 
 ## Precedence
 

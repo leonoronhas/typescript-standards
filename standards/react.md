@@ -70,26 +70,31 @@ export const Button: React.FC<ButtonProps> = ({ label, onClick }) => (
 
 ### REACT-002 MUST: Type children, event handlers, and refs with the precise React types
 
-**Why:** `ReactNode`, the specific `React.*EventHandler` types, and element-typed refs give the compiler enough information to catch wrong element types, wrong event shapes, and null-ref mistakes; `Function`, `any`, or `JSX.Element` for children erase exactly the checks React code needs most.
+**Why:** `ReactNode`, the specific `React.*EventHandler` types, and element-typed refs give the compiler enough information to catch wrong element types, wrong event shapes, and null-ref mistakes; `Function`, `any`, or `JSX.Element` for children erase exactly the checks React code needs most. A component that exposes a ref accepts it as an ordinary prop typed with the element-specific `Ref` type (e.g. `ref?: Ref<HTMLInputElement>`); new code must not use `forwardRef` — it is no longer necessary in React 19 and will be deprecated in a future release.
 
 **Do:**
 
 ```tsx
-import { useRef, type ReactNode, type ChangeEventHandler } from "react";
+import { useRef, type ReactNode, type ChangeEventHandler, type Ref } from "react";
 
 interface FieldProps {
   children: ReactNode; // accepts elements, strings, fragments, null
   onChange: ChangeEventHandler<HTMLInputElement>;
+  ref?: Ref<HTMLInputElement>; // ref as an ordinary prop — no forwardRef
 }
 
-export function Field({ children, onChange }: FieldProps) {
-  const inputRef = useRef<HTMLInputElement>(null); // ref typed to the element
+export function Field({ children, onChange, ref }: FieldProps) {
   return (
     <label>
       {children}
-      <input ref={inputRef} onChange={onChange} />
+      <input ref={ref} onChange={onChange} />
     </label>
   );
+}
+
+export function Form({ onEmailChange }: { onEmailChange: ChangeEventHandler<HTMLInputElement> }) {
+  const emailRef = useRef<HTMLInputElement>(null); // local ref typed to the element
+  return <Field ref={emailRef} onChange={onEmailChange}>Email</Field>;
 }
 ```
 
@@ -101,6 +106,8 @@ interface FieldProps {
   onChange: Function; // no event or element type checking
 }
 // const inputRef = useRef<any>(null); // discards element typing entirely
+// export const Field = forwardRef<HTMLInputElement, FieldProps>(...);
+//   // legacy pattern: pass ref as a plain prop instead
 ```
 
 ### REACT-003 MUST: Model mutually exclusive prop variants as a discriminated union
@@ -282,7 +289,7 @@ export function useToggle(initial = false) {
 
 ### REACT-011 SHOULD: Memoize only for problems you have measured
 
-**Why:** `useMemo`, `useCallback`, and `memo` are caches: each one adds code, dependency-array maintenance, and its own comparison cost, and most of them guard renders that were never slow. The React Compiler memoizes automatically, making hand-written memoization legacy noise — so add it only when a profiler shows a concrete re-render or recomputation problem, and remove it when the compiler is adopted.
+**Why:** `useMemo`, `useCallback`, and `memo` are caches: each one adds code, dependency-array maintenance, and its own comparison cost, and most of them guard renders that were never slow. The React Compiler (stable since 1.0, Oct 2025) memoizes automatically and should be enabled on new projects — with it, rely on the compiler and reach for manual memoization only where precise control is required. Without it, add memoization only when a profiler shows a concrete re-render or recomputation problem. When adopting the compiler in an existing codebase, leave existing memoization in place or remove it only with careful testing — removal can change compilation output. The compiler's lint rules ship in `eslint-plugin-react-hooks`' recommended presets (see `security-and-linting.md` for lint wiring).
 
 **Do:**
 
@@ -330,6 +337,8 @@ import { ErrorBoundary } from "react-error-boundary";
 ### REACT-013 SHOULD: Keep form inputs deliberately controlled with typed values; adopt a form library at scale
 
 **Why:** For simple forms, controlled inputs with a typed value object keep the data flow visible and validated in one place; mixing controlled and uncontrolled behavior on the same input causes React warnings and lost keystrokes. Past a handful of fields, a typed form library (e.g. React Hook Form with a schema resolver) handles registration, validation, and error state better than hand-rolled `useState` per field.
+
+For submission-centric forms — especially with server functions in a Next.js app — the React 19 Actions model is the sanctioned third option: pass an async function to `<form action>` and read its result with `useActionState` (plus `useOptimistic` for optimistic updates). React wraps the submission in a Transition, hands the action the submitted `FormData`, and exposes a built-in `isPending` — subsuming hand-rolled `isSubmitting`/error state. Controlled inputs and a form library remain the standard for rich interactive client-side validation.
 
 **Do:**
 
@@ -453,7 +462,7 @@ const Badge = lazy(() => import("./badge"));
 
 ### REACT-018 SHOULD: Test components and hooks through their accessible, user-visible surface
 
-**Why:** Tests that query what users perceive — roles, labels, visible text — survive refactors and fail only when behavior changes; tests that reach into state or DOM internals break on every rename and keep passing while the UI is broken for real users. React Testing Library's accessibility-first queries (`getByRole`, `getByLabelText`) double as a check that the surface is accessible at all (REACT-015); `user-event` simulates real interaction sequences where `fireEvent` dispatches a single synthetic event; `renderHook` tests a hook without a scaffold component. The red-green loop and the choice of test level are governed by `testing-tdd.md`.
+**Why:** Tests that query what users perceive — roles, labels, visible text — survive refactors and fail only when behavior changes; tests that reach into state or DOM internals break on every rename and keep passing while the UI is broken for real users. React Testing Library's accessibility-first queries (`getByRole`, `getByLabelText`) double as a check that the surface is accessible at all (REACT-015); `user-event` simulates real interaction sequences where `fireEvent` dispatches a single synthetic event — `userEvent.setup()` before render is the recommended v14+ pattern; direct `userEvent.*` calls are a v13-to-v14 migration convenience; `renderHook` tests a hook without a scaffold component. The red-green loop and the choice of test level are governed by `testing-tdd.md`.
 
 **Do:**
 
@@ -463,9 +472,10 @@ import userEvent from "@testing-library/user-event";
 
 test("submits the entered email", async () => {
   const onSubmit = vi.fn();
+  const user = userEvent.setup(); // set up before render
   render(<SignupForm onSubmit={onSubmit} />);
-  await userEvent.type(screen.getByLabelText("Email"), "a@b.co");
-  await userEvent.click(screen.getByRole("button", { name: "Sign up" }));
+  await user.type(screen.getByLabelText("Email"), "a@b.co");
+  await user.click(screen.getByRole("button", { name: "Sign up" }));
   expect(onSubmit).toHaveBeenCalledWith({ email: "a@b.co" });
 });
 

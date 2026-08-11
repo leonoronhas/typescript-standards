@@ -31,6 +31,7 @@ This file governs the workflow of proving that work actually works: what counts 
 | VER-010 | SHOULD | Commit smoke scripts to the repository instead of re-inventing ad-hoc checks |
 | VER-011 | MUST | Run a post-deploy smoke check of the critical path |
 | VER-012 | SHOULD | Verify from a clean state when caching or local state could mask failure |
+| VER-013 | SHOULD | Roll out progressively and observe metrics before declaring the deploy verified |
 
 ## Rules
 
@@ -164,7 +165,7 @@ curl -sf -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/keys
 
 ### VER-007 SHOULD: Verify against the real build artifact when behavior could differ from dev mode
 
-**Why:** Dev servers and dev builds differ from shipped artifacts in ways that change behavior: bundling and tree-shaking, minification, environment-variable inlining, `NODE_ENV` branches, tsx/ts-node versus compiled output. "Works in dev" does not transfer to "works as shipped".
+**Why:** Dev servers and dev builds differ from shipped artifacts in ways that change behavior: bundling and tree-shaking, minification, environment-variable inlining, `NODE_ENV` branches, native type stripping (`node script.ts`, flag-free since Node 22.18.0 for erasable syntax) or tsx versus compiled `tsc` output. Node's built-in type stripping ignores `tsconfig.json` and does no type checking, so its behavior can diverge from the compiled artifact. "Works in dev" does not transfer to "works as shipped".
 
 When the change touches anything the build pipeline transforms - imports, env access, dynamic loading, framework config, published CLI entry points - run the production build and verify against its output, not the dev server.
 
@@ -266,7 +267,7 @@ When the change touches dependencies, build configuration, migrations, onboardin
 **Do:**
 
 ```bash
-rm -rf node_modules dist && npm ci && npm run build
+rm -rf node_modules dist && npm ci && npm run build   # npm ci removes node_modules itself; the explicit rm makes the clean state visible and clears dist too
 # succeeds from scratch -> the lockfile and build config are actually sufficient
 ```
 
@@ -277,3 +278,27 @@ npm run build   # passes locally, fails in CI: the missing dep was in node_modul
 ```
 
 **Exception:** Tight inner-loop iteration - clean-state verification is a gate before claiming done (VER-001), not a tax on every edit.
+
+### VER-013 SHOULD: Roll out progressively and observe metrics before declaring the deploy verified
+
+**Why:** A smoke check (VER-011) proves the critical path once, at one moment, with one request; release-related defects - error spikes under real payloads, memory growth, degraded latency - surface only under real traffic. Progressive rollout bounds the blast radius while that evidence accumulates.
+
+Where the platform supports it, deploy to a slice first - canary instance, percentage rollout, feature-flag gate - and watch error rates and the key metrics for a defined observation window before promoting to full traffic. The deploy verdict (VER-003) stays "not yet proven" until the window closes clean.
+
+**Do:**
+
+```bash
+deploy --strategy canary --weight 10               # 10% of traffic for 30 minutes
+scripts/smoke.sh https://canary.app.example.com    # critical path holds on the canary (VER-011)
+# observe: 5xx rate 0.1% (baseline 0.1%), p95 182ms (baseline 178ms) -> promote to 100%
+deploy --promote
+```
+
+**Don't:**
+
+```bash
+deploy --all-at-once && scripts/smoke.sh https://app.example.com
+# smoke OK at T+0 -> "verified" -> the T+20min error spike hits 100% of users
+```
+
+**Exception:** Platforms with no traffic-splitting mechanism (single-instance apps, CLI releases, package publishes). Verify per VER-011 and watch whatever error reporting exists for an equivalent window.

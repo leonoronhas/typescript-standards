@@ -347,7 +347,7 @@ it("covers exportReport", async () => {
 });
 ```
 
-**Exception:** A ratchet that fails CI when coverage *drops* is legitimate — it detects untested new code without making the percentage a target to chase.
+**Exception:** A ratchet that fails CI when coverage *drops* is legitimate — it detects untested new code without making the percentage a target to chase. For the ratchet to actually see untested new code, coverage must count unexercised source files: Vitest 4 reports only files loaded during the test run by default, so a never-imported new file is invisible unless an explicit `coverage.include` glob is set.
 
 ### TDD-013 MUST NOT: Use snapshot tests as a substitute for explicit assertions
 
@@ -412,17 +412,19 @@ export default defineConfig({
 });
 ```
 
-**Exception:** A narrowly scoped retry on an e2e step that exercises a third-party sandbox outside your control may be acceptable — only with the flake documented in a tracking issue, never as a global default.
+**Exception:** For the e2e layer only, suite-level CI retries (e.g. Playwright's scaffolded `retries: process.env.CI ? 2 : 0`) are acceptable when the runner classifies retried-then-passed tests as flaky in its report AND flaky results are actively surfaced to the team — a reporter step feeding triage, or `failOnFlakyTests` where flakes should fail CI, since by default a flaky run still exits green — with every flagged flake still fixed or quarantined the same day under this rule. A narrowly scoped retry on an e2e step that exercises a third-party sandbox outside your control remains acceptable with the flake documented in a tracking issue. The prohibition stays absolute for unit and integration suites.
 
 ### TDD-016 SHOULD: Add type-level tests for published type signatures
 
 **Why:** For a library, exported types are API: a widened parameter, a lost generic inference, or an accidentally-`any` return breaks consumers with zero runtime test failing. Type-level tests make the compiler assert the contract.
 
-Use `expectTypeOf` (vitest / expect-type) or `tsd` to pin exact types of public exports, and `@ts-expect-error` to pin what must NOT compile. Strongly recommended for published libraries; optional for application-internal types.
+Use `expectTypeOf` (vitest / expect-type) or `tsd` to pin exact types of public exports, and `@ts-expect-error` to pin what must NOT compile. Strongly recommended for published libraries; optional for application-internal types. Type-level assertions only fail under a typecheck step — run them via `vitest --typecheck` in `*.test-d.ts` files, or ensure `tsc --noEmit` covers test files in CI; verify a deliberately wrong assertion actually fails before trusting the type test.
 
 **Do:**
 
 ```ts
+// parse-event.test-d.ts — statically analyzed only: fails under `vitest --typecheck`
+// or `tsc`, never at runtime; without a typecheck step these assertions are no-ops
 import { expectTypeOf } from "expect-type";
 
 it("parseEvent narrows to the event union", () => {
