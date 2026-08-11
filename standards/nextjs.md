@@ -4,7 +4,7 @@ description: "Next.js App Router addendum: server/client component boundaries, s
 load_when:
   - "Working in a Next.js project (app/ directory, next.config.*, next build)"
   - "Deciding where 'use client' goes or structuring server/client component boundaries"
-  - "Writing server actions, route handlers, or middleware in Next.js"
+  - "Writing server actions, route handlers, or proxy (middleware) in Next.js"
   - "Adding data fetching, caching, or revalidation logic in a Next.js app"
   - "Handling environment variables or secrets in a Next.js codebase"
   - "Creating routes, layouts, loading/error states, or organizing files under app/"
@@ -31,7 +31,7 @@ This file layers Next.js App Router rules on top of the framework-agnostic core:
 | NEXT-010 | SHOULD | Organize `app/` with route groups, private folders, and colocation |
 | NEXT-011 | SHOULD | Stream with Suspense at meaningful UI seams and provide segment state files |
 | NEXT-012 | MUST | Parallelize independent data fetches |
-| NEXT-013 | MUST | Keep middleware thin and edge-runtime compatible |
+| NEXT-013 | MUST | Keep proxy (formerly middleware) thin |
 | NEXT-014 | SHOULD | Use `next/image` and `next/font` instead of raw tags |
 
 ## Rules
@@ -174,7 +174,7 @@ export async function deleteProject(formData: FormData) {
 
 ### NEXT-006 MUST: Declare caching intent explicitly at every data access
 
-**Why:** Next.js caching defaults have changed across major versions and vary by context (fetch cache, full route cache, router cache); relying on a default you have not read produces stale data or accidental dynamic rendering. Written intent survives upgrades and review.
+**Why:** Next.js caching defaults have changed across major versions and vary by context (fetch cache, full route cache, router cache); relying on a default you have not read produces stale data or accidental dynamic rendering. Since Next 15, `fetch()` and `GET` route handlers are uncached by default; under Next 16's Cache Components model (opted in via `cacheComponents: true`) all caching is fully opt-in via `"use cache"` and all dynamic code runs at request time — while without it, eligible pages are still statically prerendered by default. Written intent survives upgrades and review.
 
 **Do:**
 
@@ -185,7 +185,21 @@ const me = await fetch(api("/me"), { cache: "no-store" });
 ```
 
 ```ts
-// or declared per segment, at the top of page.tsx / route.ts
+// Cache Components (the current official model — Next 16, `cacheComponents: true`):
+// declare intent with "use cache" plus cacheLife/cacheTag (stable in 16)
+import { cacheLife, cacheTag } from "next/cache";
+
+export async function getStats() {
+  "use cache";
+  cacheLife("minutes");
+  cacheTag("stats");
+  return fetchStats();
+}
+```
+
+```ts
+// previous model only — declared per segment, at the top of page.tsx / route.ts;
+// removed when Cache Components is enabled
 export const revalidate = 300;
 // export const dynamic = "force-dynamic";
 ```
@@ -197,9 +211,11 @@ export const revalidate = 300;
 const stats = await fetch(api("/stats"));
 ```
 
+When invalidating tagged data, use the two-argument `revalidateTag(tag, profile)` or `updateTag(tag)` in Server Actions — the single-argument `revalidateTag(tag)` form is deprecated in Next 16.
+
 ### NEXT-007 MUST: Type route handler params and set their caching semantics deliberately
 
-**Why:** Since Next 15, `params` is a `Promise` and an untyped destructure hides that. Caching defaults for `GET` handlers flipped across major versions: Next 14 cached them by default, silently freezing responses that should be per-request; since Next 15 they are dynamic unless explicitly opted in via `force-static` or `revalidate`. Declare caching intent explicitly either way so behavior survives major upgrades.
+**Why:** Since Next 15, `params` is a `Promise` and an untyped destructure hides that — and the temporary synchronous access from the 15.x period is fully removed in Next 16, so a hand-rolled sync destructure is now a hard runtime bug, not just a hidden typing gap. Caching defaults for `GET` handlers flipped across major versions: Next 14 cached them by default, silently freezing responses that should be per-request; since Next 15 they are dynamic unless explicitly opted in via `force-static` or `revalidate`. Declare caching intent explicitly either way so behavior survives major upgrades.
 
 **Do:**
 
@@ -207,8 +223,18 @@ const stats = await fetch(api("/stats"));
 // app/api/projects/[id]/route.ts
 export const dynamic = "force-dynamic"; // documents per-request intent; or opt into caching with `revalidate`
 
+// RouteContext (with PageProps / LayoutProps) is generated during `next dev`,
+// `next build`, or `npx next typegen` (since 15.5) — globally available, no import
+export async function GET(_req: NextRequest, ctx: RouteContext<"/api/projects/[id]">) {
+  const { id } = await ctx.params;
+  return Response.json(await getProject(id));
+}
+```
+
+```ts
+// manual fallback without typegen: spell out the Promise explicitly
 export async function GET(
-  _req: Request,
+  _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
@@ -359,17 +385,18 @@ const projects = await getProjects(id); // does not depend on `user`, yet waits 
 
 **Exception:** Genuinely dependent fetches (the second needs the first's result) are sequential by nature.
 
-### NEXT-013 MUST: Keep middleware thin and edge-runtime compatible
+### NEXT-013 MUST: Keep proxy (formerly middleware) thin
 
-**Why:** Middleware runs on every matched request before anything else, typically in the edge runtime where Node APIs are unavailable — heavy work multiplies site-wide latency, and Node-only imports break at deploy. Keep it to routing decisions on cheap signals; do real work in the route.
+**Why:** Proxy runs before every matched request, so any heavy work — DB session lookups, slow fetches — multiplies into site-wide latency; it is officially not intended for slow data fetching nor as a full session-management or authorization solution, and fetch cache options have no effect there. In Next 16 proxy runs on the Node.js runtime (edge is not supported in proxy; `middleware.ts` survives only as a deprecated edge-runtime escape hatch slated for removal). Keep it to routing decisions on cheap signals; do real work in the route.
 
 **Do:**
 
 ```ts
-// middleware.ts — cookie presence check and redirect only
-export function middleware(req: NextRequest): NextResponse | undefined {
-  if (!req.cookies.has("session")) {
-    return NextResponse.redirect(new URL("/login", req.url));
+// proxy.ts — cookie presence check and redirect only
+// (a default export is also accepted; standardize on the named export)
+export function proxy(request: NextRequest): NextResponse | undefined {
+  if (!request.cookies.has("session")) {
+    return NextResponse.redirect(new URL("/login", request.url));
   }
 }
 export const config = { matcher: ["/dashboard/:path*"] };
@@ -378,9 +405,9 @@ export const config = { matcher: ["/dashboard/:path*"] };
 **Don't:**
 
 ```ts
-export async function middleware(req: NextRequest) {
-  const session = await db.sessions.findOne(/* ... */); // DB call on every request,
-  // via a Node driver the edge runtime cannot run
+export async function proxy(request: NextRequest) {
+  const session = await db.sessions.findOne(/* ... */); // DB call on every matched
+  // request — site-wide latency; proxy is not a session or authorization layer
 }
 ```
 

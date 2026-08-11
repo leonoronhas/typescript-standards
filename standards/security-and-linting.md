@@ -131,7 +131,7 @@ npm audit --audit-level=high
 
 # CI gate — fails the build on findings
 npm audit --audit-level=high
-osv-scanner --lockfile=package-lock.json   # broader DB, use alongside npm audit
+osv-scanner scan -L package-lock.json      # broader DB, use alongside npm audit
 ```
 
 **Don't:**
@@ -179,16 +179,32 @@ ignore-scripts=true   # no arbitrary code execution on install
 # WARNING: ignore-scripts also suppresses YOUR OWN lifecycle scripts, including
 # `prepare` — install husky hooks with an explicit `npm run prepare` (see SEC-018)
 
-# a per-package install-script allowlist exists only in pnpm:
-#   package.json → "pnpm": { "onlyBuiltDependencies": ["esbuild"] }
-# npm is all-or-nothing: keep scripts off globally and run `npm rebuild esbuild`
+# both major package managers now allowlist install scripts per package:
+#   pnpm 11: `allowBuilds` in pnpm-workspace.yaml (was `onlyBuiltDependencies`
+#            in pnpm <= 10), managed interactively with `pnpm approve-builds`
+#   npm 12:  blocks unlisted install scripts by default (advisory since 11.16) —
+#            the `allowScripts` field in package.json, managed with
+#            `npm install-scripts approve <pkg>` (version-pinned by default)
+#            and `npm install-scripts deny <pkg>`
+# fallback for npm < 12 only: keep scripts off globally and run `npm rebuild <pkg>`
 # manually for the few packages that genuinely need their build step
+
+# delay freshly published versions — malicious releases are usually caught within hours
+#   pnpm-workspace.yaml → minimumReleaseAge: 1440   # 24 h — the pnpm 11 default; keep it
+#   list genuinely urgent security patches in minimumReleaseAgeExclude
+#   npm has no native cooldown — approximate with `npm install --before <date>`
 
 # before adding a dependency: verify the exact name, publisher, and repo
 npm view left-pad name maintainers repository.url
 
-# prefer packages published with provenance (npm trusted publishing / --provenance)
+# prefer packages published with provenance
 npm audit signatures
+
+# projects that PUBLISH packages: publish via npm trusted publishing (OIDC) from CI —
+# provenance is attested automatically for public packages; pass --provenance only
+# in token-based CI fallbacks. Long-lived publish tokens no longer exist (classic
+# tokens revoked Dec 2025; granular tokens default to 7-day expiry, 90-day max) —
+# keep 2FA on the publishing account, preferring WebAuthn/passkeys over TOTP
 ```
 
 **Don't:**
@@ -198,7 +214,7 @@ npm audit signatures
 npm install lodahs
 ```
 
-**Exception:** Libraries (not applications) may use caret ranges in `dependencies` to avoid version conflicts downstream; the lockfile still pins their own dev tree. Packages that genuinely need install scripts (e.g., native builds) are allowed individually — pnpm's `onlyBuiltDependencies` or a manual `npm rebuild <pkg>` — not by re-enabling scripts globally.
+**Exception:** Libraries (not applications) may use caret ranges in `dependencies` to avoid version conflicts downstream; the lockfile still pins their own dev tree. Packages that genuinely need install scripts (e.g., native builds) are allowed individually — pnpm's `allowBuilds` via `pnpm approve-builds`, or npm's `allowScripts` via `npm install-scripts approve` — never by re-enabling scripts globally.
 
 ### SEC-007 MUST: Parse all external input at the boundary with a schema library; never trust `process.env`, request bodies, or file contents
 
@@ -408,14 +424,16 @@ const res = await fetch(userUrl); // file:, internal IPs, metadata endpoints, re
 **Do:**
 
 ```ts
-// eslint.config.mjs
+// eslint.config.mjs — ESLint 10 is flat-config-only (v9 reached EOL 2026-08-06);
+// use ESLint-10-compatible plugin majors (e.g., eslint-plugin-security >= 4)
+import { defineConfig } from "eslint/config"; // replaces the deprecated tseslint.config() wrapper
 import tseslint from "typescript-eslint";
 import security from "eslint-plugin-security";
 import jsxA11y from "eslint-plugin-jsx-a11y"; // React projects — see `react.md` REACT-015
 import tsdoc from "eslint-plugin-tsdoc"; // where doc-comment linting is wanted — see `documentation.md`
 
-export default tseslint.config(
-  ...tseslint.configs.recommendedTypeChecked, // or strictTypeChecked
+export default defineConfig(
+  tseslint.configs.recommendedTypeChecked, // or strictTypeChecked
   security.configs.recommended,
   jsxA11y.flatConfigs.recommended, // React projects only
   { plugins: { tsdoc }, rules: { "tsdoc/syntax": "warn" } },

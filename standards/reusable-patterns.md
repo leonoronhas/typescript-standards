@@ -33,6 +33,7 @@ This file governs typed design patterns: which pattern fits which problem, how t
 | PAT-013 | SHOULD | Type event emitters and pub-sub channels with an event-map generic |
 | PAT-014 | SHOULD | Constrain every type parameter and generalize only from real call sites |
 | PAT-015 | MAY | Apply cross-cutting concerns with typed higher-order function wrappers |
+| PAT-016 | SHOULD | Implement deterministic resource cleanup with `using` and the disposable protocol |
 
 ## Rules
 
@@ -159,7 +160,7 @@ if (!port.ok) {
 }
 ```
 
-Keep the split clean: expected failures return `Result`; programmer errors (violated invariants, impossible branches) throw, so they crash loudly and get fixed. Pick one Result implementation per codebase — a hand-rolled type like the above or one library (e.g. neverthrow) — and use it everywhere; mixing several, or mixing Result and thrown errors for the same failure, is worse than either alone.
+Keep the split clean: expected failures return `Result`; programmer errors (violated invariants, impossible branches) throw, so they crash loudly and get fixed. Pick one Result implementation per codebase — a hand-rolled type like the above or one library (e.g. neverthrow for a lightweight Result; Effect if the team commits to its whole ecosystem — do not import Effect just for a Result type) — and use it everywhere; mixing several, or mixing Result and thrown errors for the same failure, is worse than either alone.
 
 **Exception:** At process boundaries (HTTP handlers, job runners, CLIs) convert Results to protocol-appropriate responses and let a top-level handler translate uncaught exceptions into 500s/non-zero exits.
 
@@ -509,7 +510,7 @@ bus.on("order.paid", ({ amountCents }) => {}); // payload fully typed
 bus.emit("user.created", { userId: asUserId("u_1") });
 ```
 
-Define the event map once next to the bus and import it everywhere; it doubles as the catalog of everything that can happen in the system. The same shape types Node's `EventEmitter` (via wrappers or libraries), browser `CustomEvent` dispatch, and message-queue producers/consumers. For cross-process pub-sub, validate incoming payloads at the boundary before trusting the type.
+Define the event map once next to the bus and import it everywhere; it doubles as the catalog of everything that can happen in the system. The same shape types browser `CustomEvent` dispatch and message-queue producers/consumers. Node's built-in `EventEmitter` accepts an event-map generic natively via `@types/node` since early 2024 (`new EventEmitter<Events>()`), with map values as argument tuples (`{ "user.created": [UserPayload] }`) rather than single payloads — so a wrapper is needed only when you want the single-payload, unsubscribe-returning interface shown above. For cross-process pub-sub, validate incoming payloads at the boundary before trusting the type.
 
 ### PAT-014 SHOULD: Constrain every type parameter and generalize only from real call sites
 
@@ -599,3 +600,44 @@ async function fetchProfile(id: UserId): Promise<Profile> {
 Wrappers compose at the wiring site (`withCache(withRetry(withLogging(fn)))`), keeping each concern testable alone. Keep them signature-preserving — a wrapper that changes the return type is a different function and deserves a different name. Apply PAT-001 before writing one: two hand-rolled retry loops do not yet justify a generic `withRetry`. This rule covers only the wrapper mechanics; for outbound I/O the retry policy itself — bounded attempts, exponential backoff, jitter, retrying transient failures only — is governed by `nodejs.md` NODE-012.
 
 **Exception:** When a framework already provides the concern as configuration (HTTP client retry options, framework middleware), use that instead of a bespoke wrapper.
+
+### PAT-016 SHOULD: Implement deterministic resource cleanup with the disposable protocol
+
+**Why:** Manual try/finally cleanup is rewritten at every acquisition site and nests one level per resource; the disposable protocol attaches cleanup to the resource itself, and `using` runs it on every exit path — return, throw, or early exit — in reverse acquisition order.
+
+**Don't:**
+
+```ts
+async function runJob(cfg: JobConfig): Promise<void> {
+  const conn = await openConnection(cfg.dbUrl);
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "job-"));
+    try {
+      await processJob(conn, dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true }); // each resource adds a nesting level
+    }
+  } finally {
+    await conn.close(); // and one forgotten finally leaks the connection
+  }
+}
+```
+
+**Do:**
+
+```ts
+class TempDir implements Disposable {
+  readonly path = mkdtempSync(join(tmpdir(), "job-"));
+  [Symbol.dispose](): void {
+    rmSync(this.path, { recursive: true, force: true });
+  }
+}
+
+async function runJob(cfg: JobConfig): Promise<void> {
+  await using conn = await openConnection(cfg.dbUrl); // implements [Symbol.asyncDispose]
+  using dir = new TempDir();
+  await processJob(conn, dir.path);
+} // dir, then conn, disposed on every exit path
+```
+
+Have resource-owning objects — connections, locks, file handles, temp files, watchers — implement `[Symbol.dispose]()` or `[Symbol.asyncDispose]()`, and have their factories (PAT-008) return the disposable type so acquisition sites can `using` it. To aggregate teardown of many resources — for example everything wired in the PAT-005 composition root — collect them in a `DisposableStack`/`AsyncDisposableStack` and dispose the stack once; it runs each cleanup in reverse order. Explicit Resource Management is a finished TC39 proposal (Stage 4, 2026; slated for ES2027): TypeScript has downleveled the `using` syntax since 5.2, but the `Symbol.dispose` and `DisposableStack` built-ins still need runtime or polyfill support — native in Node 24+ and evergreen browsers. On older targets, try/finally remains the fallback.

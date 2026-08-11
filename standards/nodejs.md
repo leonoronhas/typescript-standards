@@ -34,6 +34,8 @@ Runtime-specific rules for TypeScript services running on Node.js: process lifec
 | NODE-014 | MUST NOT | Build shell command strings; use `execFile`/`spawn` with argument arrays |
 | NODE-015 | SHOULD | Carry request-scoped context with `AsyncLocalStorage`, not params or globals |
 | NODE-016 | MUST | Harden inbound HTTP: security headers, CORS allowlist, body limits, rate limits |
+| NODE-017 | SHOULD | Run services under the permission model with an explicit capability allowlist |
+| NODE-018 | SHOULD | Keep TypeScript erasable so it runs under Node's native type stripping |
 
 ## Rules
 
@@ -67,7 +69,7 @@ echo "24" > .nvmrc
 
 ### NODE-002 MUST: Use ESM as the module system for new code
 
-**Why:** ESM is the standard JavaScript module system, is required by a growing share of dependencies published as ESM-only, and gives static import analysis that CommonJS cannot.
+**Why:** ESM is the standard JavaScript module system and gives static import analysis that CommonJS cannot. The mandate rests on that standardization — with `require(esm)` stable on every supported release line, ESM-only dependencies no longer force the choice.
 
 **Do:**
 
@@ -101,7 +103,7 @@ const { readFile } = require("fs/promises"); // CJS in a new module
 module.exports = { loadTemplate };
 ```
 
-**Exception:** An existing CommonJS codebase may stay CJS until deliberately migrated; do not mix systems file-by-file within one package.
+**Exception:** An existing CommonJS codebase may stay CJS until deliberately migrated; stable `require(esm)` lets it consume ESM-only dependencies (those free of top-level `await`) while it migrates. Do not mix systems file-by-file within one package.
 
 ### NODE-003 MUST: Validate environment configuration at boot with a schema and fail fast
 
@@ -121,6 +123,13 @@ const schema = z.object({
 
 export const config = schema.parse(process.env); // throws at boot on bad config
 export type Config = typeof config;
+```
+
+```bash
+# local development: load .env natively — no dotenv dependency
+# (--env-file-if-exists is stable since Node 24.10/22.21 and skips a missing file;
+#  the schema.parse above stays the single validation gate)
+node --env-file-if-exists=.env dist/server.js
 ```
 
 **Don't:**
@@ -502,3 +511,58 @@ app.post("/login", loginHandler); // no rate limit — credential stuffing at li
 ```
 
 **Exception:** A service reachable only through a gateway that already enforces a control (headers, limits, throttling) may rely on the gateway for it — document which layer owns each control, and keep the body-size bound on the service itself.
+
+### NODE-017 SHOULD: Run services under the permission model with an explicit capability allowlist
+
+**Why:** Every dependency in the process inherits its full OS access; the permission model — stable since Node 22.13, so available on every runtime NODE-001 permits — denies capabilities at the runtime level as defense-in-depth. A service that never spawns processes cannot be made to spawn one, complementing NODE-014's structural defense, and one that writes only its data directory cannot be made to write anywhere else. Derive the allowlist on Node 24 by exercising the service under `--permission` in a non-production environment (violations fail with `ERR_ACCESS_DENIED`) or by probing `process.permission.has()` at runtime; the log-only `--permission-audit` discovery mode exists only on Node 25.8+, not on the 24 LTS line NODE-001 mandates.
+
+**Do:**
+
+```bash
+# --permission denies fs, child-process, worker, and addon access by default;
+# grant exactly what the service needs with --allow-* flags
+node --permission \
+  --allow-fs-read=/app \
+  --allow-fs-write=/app/data \
+  dist/server.js
+```
+
+**Don't:**
+
+```bash
+node dist/server.js # every dependency gets full fs, child-process, worker, and addon access
+```
+
+**Exception:** Processes whose whole job is broad OS access (build tooling, developer CLIs) gain little from the model; scope this rule to long-running services.
+
+### NODE-018 SHOULD: Keep TypeScript erasable so it runs under Node's native type stripping
+
+**Why:** Node executes `.ts` files directly by stripping types — on by default since Node 22.18 and marked stable in 24.12 — which removes the build step from local runs, scripts, and tooling. Stripping only erases: constructs that need transformation (enums, namespaces with runtime code, parameter properties, import aliases, `.tsx`) do not run, and no type checking is performed. Enabling `erasableSyntaxOnly` (TypeScript 5.8+, paired with `verbatimModuleSyntax`) makes the compiler reject exactly the non-erasable constructs, so the same code runs both compiled and natively — and `tsc --noEmit` remains the type gate in CI.
+
+**Do:**
+
+```jsonc
+// tsconfig.json — alongside the canonical settings in NODE-002
+{
+  "compilerOptions": {
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true
+  }
+}
+```
+
+```bash
+node src/server.ts # types stripped, never checked — keep tsc --noEmit as the CI gate
+```
+
+**Don't:**
+
+```ts
+enum OrderStatus { Pending, Paid } // needs transformation, not erasure — fails natively
+
+class ApiClient {
+  constructor(private baseUrl: string) {} // parameter property — same problem
+}
+```
+
+**Exception:** A codebase that deliberately keeps non-erasable constructs (an entrenched enum-heavy domain layer, `.tsx` sources) forgoes native execution and keeps its compile step; `tsc --noEmit` type checking is unaffected either way.

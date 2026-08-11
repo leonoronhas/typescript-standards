@@ -153,32 +153,37 @@ import { toCents } from "@/features/billing/internal/money";
 **Why:** Boundaries that live only in a document decay with the first rushed PR; a rule the linter enforces is a rule that holds under deadline pressure and against agent-generated code alike. Reviewers should never spend attention on what a machine can reject.
 
 **Do:**
-```jsonc
-// eslint.config — eslint-plugin-boundaries
-{
-  "settings": {
-    "boundaries/elements": [
-      { "type": "feature", "pattern": "src/features/*", "capture": ["name"] },
-      { "type": "shared", "pattern": "src/shared/*" }
-    ]
-  },
-  "rules": {
-    "boundaries/element-types": ["error", {
-      "default": "disallow",
-      "rules": [
-        { "from": "feature", "allow": ["shared", "feature"] }, // features use shared and other features…
-        { "from": "shared", "allow": ["shared"] }               // …shared never imports features
+```js
+// eslint.config.js — eslint-plugin-boundaries (flat config)
+import boundaries from "eslint-plugin-boundaries";
+
+export default [
+  {
+    plugins: { boundaries },
+    settings: {
+      "boundaries/elements": [
+        { type: "feature", pattern: "src/features/*", capture: ["name"] },
+        { type: "shared", pattern: "src/shared/*" }
       ]
-    }],
-    "boundaries/entry-point": ["error", {
-      "default": "disallow",
-      "rules": [
-        // ORG-004/ORG-005: cross-feature imports may only hit the target's entry point
-        { "target": ["feature"], "allow": "index.ts" }
-      ]
-    }]
+    },
+    rules: {
+      "boundaries/element-types": ["error", {
+        default: "disallow",
+        rules: [
+          { from: "feature", allow: ["shared", "feature"] }, // features use shared and other features…
+          { from: "shared", allow: ["shared"] }              // …shared never imports features
+        ]
+      }],
+      "boundaries/entry-point": ["error", {
+        default: "disallow",
+        rules: [
+          // ORG-004/ORG-005: cross-feature imports may only hit the target's entry point
+          { target: ["feature"], allow: "index.ts" }
+        ]
+      }]
+    }
   }
-}
+];
 ```
 
 **Don't:**
@@ -186,7 +191,7 @@ import { toCents } from "@/features/billing/internal/money";
 Boundary rules stated only in README/CONTRIBUTING, checked only in code review.
 ```
 
-Equivalent tools are acceptable: `eslint-plugin-import` (`no-restricted-paths`) or `dependency-cruiser` with rules in CI. Pick one, wire it into the lint step (see `security-and-linting.md` for lint pipeline standards), and encode ORG-003/ORG-005/ORG-012 in it.
+Equivalent tools are acceptable: `eslint-plugin-import-x` (`import-x/no-restricted-paths`; it supersedes `eslint-plugin-import`, whose peer range excludes ESLint 10) or `dependency-cruiser` with rules in CI. Pick one, wire it into the lint step (see `security-and-linting.md` for lint pipeline standards), and encode ORG-003/ORG-005/ORG-012 in it.
 
 ### ORG-007 MUST NOT: Introduce circular dependencies; detect them in CI
 
@@ -194,8 +199,10 @@ Equivalent tools are acceptable: `eslint-plugin-import` (`no-restricted-paths`) 
 
 **Do:**
 ```bash
-npx madge --circular --extensions ts,tsx src/   # fails on any cycle; run in CI
-# or encode a no-cycles rule in dependency-cruiser alongside ORG-006
+# CI: dependency-cruiser with a no-circular rule, alongside the ORG-006 boundary rules
+npx depcruise --validate src/   # fails on any cycle
+# alternatives: import-x/no-cycle (eslint-plugin-import-x) or skott
+# avoid madge: unmaintained since 2024, TypeScript 5-only peer range, known missed cycles
 ```
 
 **Don't:**
@@ -250,6 +257,14 @@ export default { resolve: { tsconfigPaths: true } };
 // Vite 7 and earlier: the plugin does the same job
 import tsconfigPaths from "vite-tsconfig-paths";
 export default { plugins: [tsconfigPaths()] };
+```
+
+Node itself ignores tsconfig `paths`: under its now-default type stripping, or when running `tsc` output directly without a bundler, `@/*` imports fail at runtime. For Node-executed code, use package.json subpath imports as the runtime-native equivalent, or restrict `@/*` aliases to bundler-processed code:
+
+```jsonc
+// package.json — subpath imports resolve natively in Node, TypeScript, and bundlers
+{ "imports": { "#src/*": "./src/*" } }
+// import { createInvoice } from "#src/features/billing";
 ```
 
 **Don't:**

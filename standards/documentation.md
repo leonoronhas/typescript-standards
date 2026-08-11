@@ -199,9 +199,9 @@ An accepted ADR is immutable; when a decision changes, write a new ADR that name
 
 **Why:** Consumers of a package, CLI, or API must be able to judge upgrade risk from the version number and a human-written summary — not by diffing source. Without both, every release is a surprise.
 
-For every published artifact: follow semantic versioning — breaking change → major, backward-compatible feature → minor, fix → patch; a `0.x` version explicitly signals an unstable surface where minors may break. Maintain a `CHANGELOG.md` with one dated section per release, grouped by kind (Added / Changed / Fixed / Removed), with **breaking changes listed first and marked**, each entry naming the migration step it demands. The changelog entry is written in the PR that makes the change (DOC-003), not reconstructed at release time.
+For every published artifact: follow semantic versioning — breaking change → major, backward-compatible feature → minor, fix → patch; a `0.x` version explicitly signals an unstable surface where minors may break. Maintain a `CHANGELOG.md` with one dated section per release, grouped by kind (Added / Changed / Deprecated / Removed / Fixed / Security), per keepachangelog.com, with **breaking changes listed first and marked**, each entry naming the migration step it demands. The changelog entry is written in the PR that makes the change (DOC-003), not reconstructed at release time.
 
-In a changesets-managed monorepo (see `monorepo.md` MONO-014), the changeset file authored in the change PR is the changelog entry — it satisfies the written-in-the-PR requirement — and the changesets-generated `CHANGELOG.md`, grouped by bump level at release time, is accepted for published packages in place of the Added / Changed / Fixed / Removed grouping.
+In a changesets-managed monorepo (see `monorepo.md` MONO-014), the changeset file authored in the change PR is the changelog entry — it satisfies the written-in-the-PR requirement — and the changesets-generated `CHANGELOG.md`, grouped by bump level at release time, is accepted for published packages in place of the Keep a Changelog grouping.
 
 **Exception:** A continuously deployed internal application with no external consumers may rely on PR history instead of a changelog; the moment anything external depends on its API or CLI, this rule applies in full.
 
@@ -248,6 +248,8 @@ Apply four properties to any docs folder (this standards guide itself is the pat
 - **Single-topic files** — each file covers one concern completely; a reader loading only that file gets everything on the topic and nothing else. Split files that accumulate a second topic.
 - **Stable IDs** — give rules, sections, and decisions permanent identifiers (`DOC-007`, `ADR-0042`) that survive retitling and reordering, so cross-references and agent citations never rot.
 - **Self-contained units** — write each section so it can be quoted alone and still be actionable: no "as mentioned above," no context that lives only in a sibling section.
+
+When the docs are published as a website, additionally serve an `/llms.txt` index per llmstxt.org — a markdown index of the docs with one-line descriptions, the web-facing equivalent of the router file. It is a community convention with meaningful adoption among developer-documentation sites, not a formal standard, and consumption by LLM tooling is uneven — treat it as a low-cost by-product of the router file, not a retrieval guarantee.
 
 ### DOC-014 MUST: Mark deprecations with @deprecated and a migration path
 
