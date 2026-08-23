@@ -36,6 +36,11 @@ Runtime-specific rules for TypeScript services running on Node.js: process lifec
 | NODE-016 | MUST | Harden inbound HTTP: security headers, CORS allowlist, body limits, rate limits |
 | NODE-017 | SHOULD | Run services under the permission model with an explicit capability allowlist |
 | NODE-018 | SHOULD | Keep TypeScript erasable so it runs under Node's native type stripping |
+| NODE-019 | MUST | Give every auto-retried mutation a stable idempotency key, enforced at the write |
+| NODE-020 | MUST NOT | Hold a database transaction open across external I/O |
+| NODE-021 | MUST | Measure durations with the monotonic clock; reserve wall-clock time for timestamps |
+| NODE-022 | SHOULD | Accept and propagate `AbortSignal` through async call chains |
+| NODE-023 | SHOULD | Record durations as histograms; never precompute averages in-process |
 
 ## Rules
 
@@ -378,7 +383,7 @@ while (true) {
 }
 ```
 
-**Exception:** Never auto-retry non-idempotent operations (payments, sends) without an idempotency key. Skip retries entirely where the caller already retries end-to-end.
+**Exception:** Never auto-retry non-idempotent operations (payments, sends) without an idempotency key (NODE-019). Skip retries entirely where the caller already retries end-to-end.
 
 ### NODE-013 MUST: Separate operational from programmer errors; one central handler; never swallow
 
@@ -566,3 +571,166 @@ class ApiClient {
 ```
 
 **Exception:** A codebase that deliberately keeps non-erasable constructs (an entrenched enum-heavy domain layer, `.tsx` sources) forgoes native execution and keeps its compile step; `tsc --noEmit` type checking is unaffected either way.
+
+### NODE-019 MUST: Give every auto-retried mutation a stable idempotency key, enforced at the write
+
+**Why:** A timeout (NODE-011) cannot distinguish "failed" from "succeeded, reply lost," so any retried mutation (NODE-012) can execute twice unless the write itself deduplicates. A key generated once at the origin, reused on every attempt, and enforced at the final write makes the retry safe end-to-end; transport- or broker-level dedupe cannot see a user's double-click or a replayed job.
+
+**Do:**
+
+```ts
+// outbound: one key per logical operation, created BEFORE the retry loop
+const idempotencyKey = crypto.randomUUID();
+await withRetry(() =>
+  fetch(paymentsUrl, {
+    method: "POST",
+    headers: { "idempotency-key": idempotencyKey }, // same key on every attempt
+    body: JSON.stringify(charge),
+    signal: AbortSignal.timeout(5_000),
+  }), isTransient);
+```
+
+```ts
+// inbound: claim the key atomically (unique index), replay the stored response
+app.post("/charges", async (req, res) => {
+  const key = req.get("idempotency-key");
+  if (!key) return res.status(400).json({ code: "IDEMPOTENCY_KEY_REQUIRED" });
+
+  const prior = await idem.claimOrGet(key); // atomic insert-or-return
+  if (prior) return res.status(prior.status).json(prior.body);
+
+  const result = await chargeCard(req.body);
+  const response = toResponse(result);
+  await idem.saveResponse(key, response);
+  res.status(response.status).json(response.body);
+});
+```
+
+**Don't:**
+
+```ts
+// a fresh key per attempt is no key at all
+await withRetry(() =>
+  fetch(paymentsUrl, {
+    method: "POST",
+    headers: { "idempotency-key": crypto.randomUUID() }, // regenerated inside the loop
+    body: JSON.stringify(charge),
+  }), isTransient);
+```
+
+**Exception:** Naturally idempotent mutations — full-state PUT, DELETE by id, set-a-value — need no key; INSERT and increment are not naturally idempotent. Where the upstream contract already defines dedupe (a provider's own idempotency header), use that contract's key instead of inventing a parallel one.
+
+### NODE-020 MUST NOT: Hold a database transaction open across external I/O
+
+**Why:** An open transaction holds locks and pins a pooled connection; awaiting a network call inside it couples both to an upstream's latency. Under modest concurrency this exhausts the pool and serializes writers — slow requests become a full outage. Fetch before you begin; publish after you commit.
+
+**Do:**
+
+```ts
+const quote = await pricing.fetchQuote(order); // external call first, outside
+
+await db.transaction(async (tx) => {
+  await tx.insert(orders).values({ ...order, total: quote.total });
+  await tx.insert(outbox).values(orderPlacedEvent(order)); // record intent transactionally
+}); // only DB statements inside — short and bounded
+
+await publishPendingOutbox(); // side effects after commit (or a relay drains the outbox)
+```
+
+**Don't:**
+
+```ts
+await db.transaction(async (tx) => {
+  await tx.insert(orders).values(order);
+  const quote = await pricing.fetchQuote(order); // network call while holding locks
+  await queue.publish("order.placed", order);    // second system inside — not atomic anyway
+  await tx.update(orders).set({ total: quote.total });
+});
+```
+
+**Exception:** Operations on the same transactional resource (advisory locks on the same connection) are DB statements, not external I/O. A workflow that genuinely needs external confirmation mid-write splits into two short transactions with an explicit intermediate state.
+
+### NODE-021 MUST: Measure durations with the monotonic clock; reserve wall-clock time for timestamps
+
+**Why:** Wall-clock time is NTP-adjusted: it slews and can step backwards, so a `Date.now()` subtraction can be negative or wildly wrong precisely when the machine is under stress. Monotonic clocks only move forward and exist for measurement. This also sharpens TDD-008: the injected test clock should expose the two reads as distinct operations.
+
+**Do:**
+
+```ts
+const start = performance.now();               // or process.hrtime.bigint() for ns
+await handler(req);
+const elapsedMs = performance.now() - start;   // duration: monotonic
+
+await audit.log({ occurredAt: new Date().toISOString() }); // timestamp: wall clock
+```
+
+**Don't:**
+
+```ts
+const start = Date.now();
+await handler(req);
+const elapsedMs = Date.now() - start; // negative under an NTP step; skewed under slew
+```
+
+**Exception:** Persisted or displayed "when did this happen" values are wall-clock by definition. Ordering events across machines is neither clock's job — use sequence numbers or a log, not timestamps.
+
+### NODE-022 SHOULD: Accept and propagate `AbortSignal` through async call chains
+
+**Why:** NODE-011 bounds each call, but a deadline only the edge observes leaves downstream work running after the caller has given up — pinned sockets, pool connections, and CPU producing a result nobody will read. One signal threaded through the chain makes cancellation compose: edge deadline, caller disconnect, and per-call timeouts merge via `AbortSignal.any` and every I/O layer honors the same stop.
+
+**Do:**
+
+```ts
+async function getReport(id: ReportId, { signal }: { signal: AbortSignal }): Promise<Report> {
+  const meta = await fetch(metaUrl(id), { signal });          // forwarded, not re-created
+  const rows = await db.query(reportSql, [id], { signal });   // most drivers accept one
+  return render(meta, rows);
+}
+
+app.get("/reports/:id", async (req, res) => {
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(10_000),  // whole-request deadline (NODE-011)
+    requestAborted(req),          // caller-disconnect signal, where the framework exposes one
+  ]);
+  res.json(await getReport(req.params.id, { signal }));
+});
+```
+
+**Don't:**
+
+```ts
+async function getReport(id: ReportId): Promise<Report> {
+  const meta = await fetch(metaUrl(id), { signal: AbortSignal.timeout(5_000) });
+  const rows = await db.query(reportSql, [id]); // edge gave up seconds ago; this runs to completion
+  return render(meta, rows);
+}
+```
+
+**Exception:** Work that must complete once started — the commit-then-publish tail of NODE-020, cleanup, audit writes — deliberately does NOT observe the request signal; detach it and say so in a comment.
+
+### NODE-023 SHOULD: Record durations as histograms; never precompute averages in-process
+
+**Why:** An average computed in-process destroys the distribution before it leaves the service: p95/p99 — the numbers that describe the users having the worst time, and what a progressive rollout watches (`live-verification.md` VER-013) — cannot be recovered from a mean. Histograms ship the distribution; the percentile becomes a query-time choice.
+
+**Do:**
+
+```ts
+import { metrics } from "@opentelemetry/api";
+
+const meter = metrics.getMeter("checkout");
+const duration = meter.createHistogram("http.server.request.duration", { unit: "ms" });
+
+const start = performance.now(); // monotonic per NODE-021
+await handler(req);
+duration.record(performance.now() - start, { route: req.route.path });
+```
+
+**Don't:**
+
+```ts
+let totalMs = 0, count = 0;
+totalMs += elapsedMs; count += 1;
+avgGauge.set(totalMs / count); // mean since boot; the tail is gone forever
+```
+
+**Exception:** Counters and gauges remain right for counts and levels (requests served, queue depth, open connections); this rule governs durations and sizes — anything with a distribution worth keeping.

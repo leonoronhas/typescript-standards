@@ -43,6 +43,7 @@ Core language and compiler rules for every TypeScript file, in any framework: co
 | TS-023 | SHOULD | Use access modifiers deliberately; prefer `#private` for runtime privacy. |
 | TS-024 | MAY | Use factory functions for non-trivial object construction. |
 | TS-025 | MUST | Enforce these rules mechanically with ESLint and a formatter. |
+| TS-026 | MUST | Carry 64-bit integers across JSON boundaries as strings. |
 
 ## Rules
 
@@ -641,3 +642,31 @@ npm run lint && npm run format:check   # both wired into CI, not optional local 
 ```
 
 **Exception:** Type-aware linting requires the JS-based compiler line: projects type-checking with TypeScript 7.x must pin TypeScript 6.x for typescript-eslint (Microsoft's `@typescript/typescript6` npm alias lets the two coexist) until TypeScript 7.1 ships its stable programmatic API. Configuration mechanics live in `security-and-linting.md`.
+
+### TS-026 MUST: Carry 64-bit integers across JSON boundaries as strings
+
+**Why:** JavaScript numbers are IEEE-754 doubles: integers above 2^53 − 1 silently lose precision in `JSON.parse`, so a 64-bit database or snowflake id corrupts with no error thrown — while `JSON.stringify` throws on `BigInt`, so the producing side fails loudly and the consuming side fails silently. Strings survive both directions, and an identifier was never arithmetic to begin with.
+
+**Do:**
+
+```ts
+const Order = z.object({
+  id: z.string().regex(/^\d+$/), // 64-bit id transported as a string
+  totalCents: z.number(),         // genuinely numeric values stay numbers
+});
+const order = Order.parse(await res.json()); // boundary-parsed per SEC-007
+
+// producing: convert BigInt explicitly at the boundary
+res.json({ id: row.id.toString(), totalCents: row.totalCents });
+```
+
+**Don't:**
+
+```ts
+const parsed = JSON.parse('{"id": 9007199254740993}');
+parsed.id === 9007199254740992; // true — off by one, silently
+
+JSON.stringify({ id: 9007199254740993n }); // TypeError: cannot serialize a BigInt
+```
+
+**Exception:** Integers whose domain is provably bounded below 2^53 (counts, cents within range) are fine as numbers — the rule targets identifiers and any integer that can exceed 53 bits. Within one process `BigInt` is the right type; the string form exists for the JSON boundary.
